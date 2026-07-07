@@ -9,10 +9,67 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _extract_message_text(content: Any) -> str:
+    """Flatten a Claude message's content (str or list of blocks) into a single text string."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == Constants.CONTENT_TEXT:
+                    parts.append(block.get("text", ""))
+            elif hasattr(block, "type") and block.type == Constants.CONTENT_TEXT:
+                parts.append(getattr(block, "text", ""))
+        return "\n\n".join(p for p in parts if p)
+    return ""
+
+
+def _hoist_inline_system_messages(claude_request: ClaudeMessagesRequest) -> None:
+    """Merge any `role: "system"` entries from `messages[]` into the top-level `system` field.
+
+    CC 2.1.154+ started placing skill context, hook additionalContext, and post-compaction
+    summaries as `role: "system"` messages inside `messages[]`. The Anthropic Messages API
+    spec restricts `messages[].role` to `user` | `assistant`; we normalize by hoisting
+    inline system content into the top-level `system` parameter, preserving order.
+    """
+    inline_system_parts: List[str] = []
+    kept_messages: List[ClaudeMessage] = []
+
+    for msg in claude_request.messages:
+        if msg.role == Constants.ROLE_SYSTEM:
+            text = _extract_message_text(msg.content).strip()
+            if text:
+                inline_system_parts.append(text)
+        else:
+            kept_messages.append(msg)
+
+    if not inline_system_parts:
+        return
+
+    inline_system_text = "\n\n".join(inline_system_parts)
+
+    existing_text = ""
+    if isinstance(claude_request.system, str):
+        existing_text = claude_request.system
+    elif isinstance(claude_request.system, list):
+        existing_text = _extract_message_text(claude_request.system)
+
+    merged_parts = [p for p in [existing_text.strip(), inline_system_text] if p]
+    # Keep it as a plain string; downstream OpenAI conversion expects str | list.
+    claude_request.system = "\n\n".join(merged_parts)
+    claude_request.messages = kept_messages
+
+
 def convert_claude_to_openai(
     claude_request: ClaudeMessagesRequest, model_manager
 ) -> Dict[str, Any]:
     """Convert Claude API request format to OpenAI format."""
+
+    # Normalize CC 2.1.154+ inline system messages before any further processing.
+    _hoist_inline_system_messages(claude_request)
 
     # Map model
     openai_model = model_manager.map_claude_model_to_openai(claude_request.model)

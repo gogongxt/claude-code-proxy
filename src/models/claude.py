@@ -25,7 +25,10 @@ class ClaudeSystemContent(BaseModel):
     text: str
 
 class ClaudeMessage(BaseModel):
-    role: Literal["user", "assistant"]
+    # CC 2.1.154+ injects mid-conversation `role: "system"` entries into `messages[]`.
+    # We accept them here so the request passes validation; request_converter hoists
+    # their content into the top-level `system` field before forwarding upstream.
+    role: Literal["user", "assistant", "system"]
     content: Union[str, List[Union[ClaudeContentBlockText, ClaudeContentBlockImage, ClaudeContentBlockToolUse, ClaudeContentBlockToolResult]]]
 
 class ClaudeTool(BaseModel):
